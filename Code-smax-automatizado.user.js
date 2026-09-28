@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         SMAX AUTOMATIZADO - SGS 2.2.1
+// @name         SMAX AUTOMATIZADO 
 // @namespace    http://tampermonkey.net/
 // @version      1.28.0
 // @description  Robo de opcoes automatizadas para o suporte TJSP, com visualizador de anexos (PDF, imagens, DOCX) integrado direto na tela, sem downloads, navegacao entre anexos e painel de dados da solicitacao. v1.27: simbolo de magistrado = martelo em circulo (marinho) no lugar da foto do SOLICITANTE (celula "Solicitado para", achada pelo nome, nao mais o 1o avatar da linha); vinculo global resolvido em properties/UserOptions/related_properties + fetch dedicado de reserva. v1.27.1: deteccao de numero de processo (CNJ) tolerante — campo proprio e Descricao passam a aceitar os dois formatos (so digitos e formatado com hifen/pontos/barras/espacos), numero partido por tag HTML, NBSP e hifen tipografico; campo proprio lido tambem em properties/related_properties e em todas as posicoes de UserOptions; painel de Dados varre a tela quando o REST nao traz processo. v1.28: passar o cursor pelo icone de vinculo (global ou solicitacao relacionada) mostra o TITULO e o status do chamado do outro lado, na grade, na Consulta Rapida e no painel flutuante — busca sob demanda, com cache por sessao.
