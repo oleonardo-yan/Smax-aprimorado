@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         SMAX AUTOMATIZADO 
 // @namespace    http://tampermonkey.net/
-// @version      1.28.0
-// @description  Robo de opcoes automatizadas para o suporte TJSP, com visualizador de anexos (PDF, imagens, DOCX) integrado direto na tela, sem downloads, navegacao entre anexos e painel de dados da solicitacao. v1.27: simbolo de magistrado = martelo em circulo (marinho) no lugar da foto do SOLICITANTE (celula "Solicitado para", achada pelo nome, nao mais o 1o avatar da linha); vinculo global resolvido em properties/UserOptions/related_properties + fetch dedicado de reserva. v1.27.1: deteccao de numero de processo (CNJ) tolerante — campo proprio e Descricao passam a aceitar os dois formatos (so digitos e formatado com hifen/pontos/barras/espacos), numero partido por tag HTML, NBSP e hifen tipografico; campo proprio lido tambem em properties/related_properties e em todas as posicoes de UserOptions; painel de Dados varre a tela quando o REST nao traz processo. v1.28: passar o cursor pelo icone de vinculo (global ou solicitacao relacionada) mostra o TITULO e o status do chamado do outro lado, na grade, na Consulta Rapida e no painel flutuante — busca sob demanda, com cache por sessao.
+// @version      1.29.0
+// @description  Robo de opcoes automatizadas para o suporte TJSP, com visualizador de anexos (PDF, imagens, DOCX, XLSX, RTF) integrado direto na tela, sem downloads, navegacao entre anexos e painel de dados da solicitacao. v1.27: simbolo de magistrado = martelo em circulo (marinho) no lugar da foto do SOLICITANTE (celula "Solicitado para", achada pelo nome, nao mais o 1o avatar da linha); vinculo global resolvido em properties/UserOptions/related_properties + fetch dedicado de reserva. v1.27.1: deteccao de numero de processo (CNJ) tolerante — campo proprio e Descricao passam a aceitar os dois formatos (so digitos e formatado com hifen/pontos/barras/espacos), numero partido por tag HTML, NBSP e hifen tipografico; campo proprio lido tambem em properties/related_properties e em todas as posicoes de UserOptions; painel de Dados varre a tela quando o REST nao traz processo. v1.28: passar o cursor pelo icone de vinculo (global ou solicitacao relacionada) mostra o TITULO e o status do chamado do outro lado, na grade, na Consulta Rapida e no painel flutuante — busca sob demanda, com cache por sessao. v1.29: visualizador de anexos passa a abrir planilhas (XLSX/XLSM/XLSB/XLS/ODS, com abas navegaveis) e arquivos RTF.
 // @author       Leonardo
 // @match        https://suporte.tjsp.jus.br/*
 // @require      https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js
+// @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js
 // @grant        none
@@ -1142,7 +1143,7 @@
         while ((m = REGEX_DIGITOS_CNJ_CONSULTA.exec(normalizado)) !== null) {
             bloco = m[2];
             for (i = 0; i + 20 <= bloco.length; i += 20) {
-                digitos = bloco.substr(i, 20);
+                digitos = bloco.slice(i, i + 20);
                 if (opcoes.exigirEstrutura && !pareceNumeroCnjConsulta(digitos)) { continue; }
                 lista.push(digitos);
             }
@@ -3293,6 +3294,39 @@
                 border: 1px solid #bbb;
                 padding: 6px 10px;
             }
+            /* RTF: reaproveita a caixa do DOCX, só o espaçamento das linhas em
+               branco é próprio (o RTF costuma empilhar parágrafos vazios). */
+            .smax-rtf-vazio { height: 10px; margin: 0; }
+            /* Planilhas */
+            .smax-xlsx-wrap { width: 100%; height: 100%; display: flex; flex-direction: column; }
+            .smax-xlsx-abas {
+                display: flex; gap: 4px; flex-wrap: wrap; flex-shrink: 0;
+                padding: 8px 10px 0; background: #2b3440; border-radius: 6px 6px 0 0;
+            }
+            .smax-xlsx-aba {
+                border: 1px solid #47546a; border-bottom: none; background: #3a4554; color: #cfd8e3;
+                font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 6px 6px 0 0;
+                cursor: pointer; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            }
+            .smax-xlsx-aba:hover { background: #46536a; color: #fff; }
+            .smax-xlsx-aba.smax-xlsx-aba-ativa { background: #fff; color: ${COR_AZUL_ESCURO}; border-color: #fff; }
+            .smax-xlsx-area { flex: 1; overflow: auto; background: #fff; border-radius: 0 0 6px 6px; padding: 0; }
+            .smax-xlsx-tabela { border-collapse: collapse; font-size: 12.5px; color: #222; width: max-content; min-width: 100%; }
+            .smax-xlsx-tabela th, .smax-xlsx-tabela td {
+                border: 1px solid #d6dde5; padding: 4px 9px; text-align: left;
+                white-space: pre-wrap; vertical-align: top; max-width: 420px;
+            }
+            .smax-xlsx-tabela thead th, .smax-xlsx-tabela .smax-xlsx-num {
+                background: #eef2f7; color: #5b6a7d; font-weight: 700; text-align: center;
+                position: sticky; top: 0; z-index: 1;
+            }
+            .smax-xlsx-tabela .smax-xlsx-num { position: sticky; left: 0; top: auto; z-index: 0; font-size: 11px; }
+            .smax-xlsx-tabela tbody tr:nth-child(even) td { background: #fafbfc; }
+            .smax-xlsx-nota {
+                margin: 0; padding: 8px 14px; background: #fff8e6; border-bottom: 1px solid #f0dca8;
+                color: #6a4a12; font-size: 12px;
+            }
+            .smax-xlsx-vazio { padding: 24px; color: #7a8699; font-size: 13px; text-align: center; }
             .smax-loading {
                 text-align: center;
                 color: #fff;
@@ -3577,6 +3611,10 @@
         if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext)) return 'imagem';
         if (ext === 'docx') return 'docx';
         if (ext === 'doc') return 'doc-legado'; // formato binário antigo, mammoth só lê .docx
+        if (ext === 'rtf') return 'rtf';
+        // O SheetJS lê tanto os formatos novos quanto o .xls binário antigo (ao
+        // contrário do mammoth com .doc), então todos entram no mesmo caminho.
+        if (['xlsx', 'xlsm', 'xlsb', 'xls', 'ods'].includes(ext)) return 'planilha';
         if (['txt', 'log', 'csv'].includes(ext)) return 'texto';
         return 'desconhecido';
     }
@@ -3628,6 +3666,7 @@
     let renderTaskAtual = null;
     let listaAnexosAtual = [];   // [{ nome, url, elemento }]
     let indiceAnexoAtual = -1;
+    let planilhaAtual = null;    // { pasta, aba } da planilha aberta — as abas trocam sem reler o arquivo
 
     // ============================================================
     // ABERTURA / FECHAMENTO DO MODAL
@@ -3655,6 +3694,7 @@
         }
         pdfDocAtual = null;
         pdfPaginaAtual = 1;
+        planilhaAtual = null;
         listaAnexosAtual = [];
         indiceAnexoAtual = -1;
         document.removeEventListener('keydown', handlerTeclado);
@@ -3777,6 +3817,7 @@
         if (renderTaskAtual) { try { renderTaskAtual.cancel(); } catch (e) {} renderTaskAtual = null; }
         pdfDocAtual = null;
         pdfPaginaAtual = 1;
+        planilhaAtual = null;
         if (blobUrlAtual) { URL.revokeObjectURL(blobUrlAtual); blobUrlAtual = null; }
         blobBrutoAtual = null;
 
@@ -3825,6 +3866,10 @@
                 await renderizarImagem(blobTipado, nomeArquivo);
             } else if (tipo === 'docx') {
                 await renderizarDocx(blob, body);
+            } else if (tipo === 'planilha') {
+                await renderizarPlanilha(blob, body, nomeArquivo);
+            } else if (tipo === 'rtf') {
+                await renderizarRtf(blob, body);
             } else if (tipo === 'doc-legado') {
                 mostrarDocLegado(nomeArquivo);
             } else if (tipo === 'texto') {
@@ -4025,6 +4070,395 @@
         body.appendChild(wrap);
     }
 
+
+    // ============================================================
+    // PLANILHAS (XLSX / XLSM / XLSB / XLS / ODS)
+    // ============================================================
+    // Limites de pré-visualização: uma planilha de 50 mil linhas montaria 50 mil
+    // <tr> e travaria a página. O que passar disso vira um aviso com o botão de
+    // baixar — quem precisa do arquivo inteiro abre no Excel mesmo.
+    const XLSX_MAX_LINHAS = 500;
+    const XLSX_MAX_COLUNAS = 60;
+
+    async function renderizarPlanilha(blob, body, nomeArquivo) {
+        if (typeof XLSX === 'undefined') {
+            mostrarErro('Biblioteca SheetJS (xlsx) não foi carregada. Verifique o @require no cabeçalho.');
+            return;
+        }
+        const arrayBuffer = await blob.arrayBuffer();
+
+        // XLSX/XLSM/XLSB/ODS são pacotes ZIP, então começam com "PK". Sem essa
+        // conferência, um arquivo truncado ou corrompido não dá erro: o SheetJS
+        // cai no palpite de que é texto/CSV e monta uma tabela de uma célula só,
+        // com o lixo binário dentro. O .xls antigo fica de fora da checagem de
+        // propósito — sistemas legados adoram mandar HTML ou CSV com esse nome, e
+        // o SheetJS lê esses casos direitinho.
+        const ext = (nomeArquivo.split('.').pop() || '').toLowerCase();
+        if (['xlsx', 'xlsm', 'xlsb', 'ods'].includes(ext)) {
+            const assinatura = new Uint8Array(arrayBuffer.slice(0, 2));
+            if (assinatura[0] !== 0x50 || assinatura[1] !== 0x4B) {
+                throw new Error('Este arquivo .' + ext + ' parece estar corrompido ou incompleto — o conteúdo não é o de uma planilha. Use "Baixar" e tente abrir no Excel.');
+            }
+        }
+
+        let pasta;
+        try {
+            // cellStyles fica desligado de propósito: a pré-visualização não usa
+            // cor/fonte da célula e ligar isso custa memória à toa em arquivo grande.
+            pasta = XLSX.read(arrayBuffer, { type: 'array', cellDates: true, cellStyles: false });
+        } catch (err) {
+            log('Falha ao interpretar planilha:', err);
+            throw new Error('Não consegui ler esta planilha. Ela pode estar protegida por senha, corrompida ou num formato que o visualizador não interpreta.');
+        }
+        if (!pasta || !pasta.SheetNames || !pasta.SheetNames.length) {
+            throw new Error('Esta planilha não tem nenhuma aba para mostrar.');
+        }
+
+        planilhaAtual = { pasta: pasta, nome: nomeArquivo, aba: 0 };
+        body.classList.remove('smax-center-content');
+        body.innerHTML = '';
+
+        const wrap = document.createElement('div');
+        wrap.className = 'smax-xlsx-wrap';
+
+        // Barra de abas só aparece quando há mais de uma — planilha de aba única
+        // não precisa gastar espaço com isso.
+        if (pasta.SheetNames.length > 1) {
+            const barra = document.createElement('div');
+            barra.className = 'smax-xlsx-abas';
+            barra.id = 'smax-xlsx-abas';
+            pasta.SheetNames.forEach((nome, i) => {
+                const botao = document.createElement('button');
+                botao.type = 'button';
+                botao.className = 'smax-xlsx-aba' + (i === 0 ? ' smax-xlsx-aba-ativa' : '');
+                botao.textContent = nome;
+                botao.title = nome;
+                botao.addEventListener('click', () => desenharAbaPlanilha(i));
+                barra.appendChild(botao);
+            });
+            wrap.appendChild(barra);
+        }
+
+        const area = document.createElement('div');
+        area.className = 'smax-xlsx-area';
+        area.id = 'smax-xlsx-area';
+        wrap.appendChild(area);
+        body.appendChild(wrap);
+
+        desenharAbaPlanilha(0);
+    }
+
+    function desenharAbaPlanilha(indice) {
+        const ctx = planilhaAtual;
+        const area = document.getElementById('smax-xlsx-area');
+        if (!ctx || !area) return;
+        ctx.aba = indice;
+
+        const barra = document.getElementById('smax-xlsx-abas');
+        if (barra) {
+            Array.prototype.forEach.call(barra.children, (botao, i) => {
+                botao.classList.toggle('smax-xlsx-aba-ativa', i === indice);
+            });
+        }
+
+        area.innerHTML = '';
+        const ws = ctx.pasta.Sheets[ctx.pasta.SheetNames[indice]];
+        if (!ws || !ws['!ref']) {
+            const vazio = document.createElement('p');
+            vazio.className = 'smax-xlsx-vazio';
+            vazio.textContent = 'Esta aba está vazia.';
+            area.appendChild(vazio);
+            return;
+        }
+
+        const total = XLSX.utils.decode_range(ws['!ref']);
+        const totalLinhas = total.e.r - total.s.r + 1;
+        const totalColunas = total.e.c - total.s.c + 1;
+        const linhas = Math.min(totalLinhas, XLSX_MAX_LINHAS);
+        const colunas = Math.min(totalColunas, XLSX_MAX_COLUNAS);
+        const recorte = {
+            s: { r: total.s.r, c: total.s.c },
+            e: { r: total.s.r + linhas - 1, c: total.s.c + colunas - 1 }
+        };
+
+        if (linhas < totalLinhas || colunas < totalColunas) {
+            const nota = document.createElement('p');
+            nota.className = 'smax-xlsx-nota';
+            nota.textContent = '⚠️ Pré-visualização limitada às primeiras ' + linhas + ' linhas e ' +
+                colunas + ' colunas (a aba tem ' + totalLinhas + ' linhas e ' + totalColunas +
+                ' colunas). Use "Baixar" para ver o arquivo inteiro.';
+            area.appendChild(nota);
+        }
+
+        // raw:false devolve o texto já formatado como está na planilha (data,
+        // moeda, percentual), em vez do número serial cru do Excel.
+        const matriz = XLSX.utils.sheet_to_json(ws, {
+            header: 1, raw: false, defval: '', blankrows: true, range: recorte
+        });
+
+        const tabela = document.createElement('table');
+        tabela.className = 'smax-xlsx-tabela';
+
+        // Cabeçalho com as letras das colunas, como no próprio Excel — ajuda a
+        // conferir com o arquivo original quando alguém cita "coluna F".
+        const thead = document.createElement('thead');
+        const trCab = document.createElement('tr');
+        trCab.appendChild(document.createElement('th'));
+        for (let c = 0; c < colunas; c++) {
+            const th = document.createElement('th');
+            th.textContent = XLSX.utils.encode_col(recorte.s.c + c);
+            trCab.appendChild(th);
+        }
+        thead.appendChild(trCab);
+        tabela.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        for (let r = 0; r < linhas; r++) {
+            const valores = matriz[r] || [];
+            const tr = document.createElement('tr');
+            const th = document.createElement('th');
+            th.className = 'smax-xlsx-num';
+            th.textContent = String(recorte.s.r + r + 1);
+            tr.appendChild(th);
+            for (let c = 0; c < colunas; c++) {
+                const td = document.createElement('td');
+                // textContent, nunca innerHTML: o conteúdo vem de um arquivo de
+                // terceiro. (O sheet_to_html do próprio SheetJS não serve aqui —
+                // ele copia o valor cru da célula para um atributo data-v sem
+                // escapar, o que deixaria a planilha injetar HTML no modal.)
+                const valor = valores[c];
+                td.textContent = (valor === null || valor === undefined) ? '' : String(valor);
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+        tabela.appendChild(tbody);
+        area.appendChild(tabela);
+    }
+
+    // ============================================================
+    // RTF
+    // ============================================================
+    // O navegador não tem visualizador nativo de RTF, e as bibliotecas prontas
+    // são pesadas demais pro que se precisa aqui (a mais conhecida puxa jQuery
+    // junto, só pra conseguir desenhar imagens WMF/EMF embutidas). Como o
+    // objetivo é LER o anexo, este interpretador enxuto cobre o que aparece num
+    // RTF de texto: grupos, palavras de controle, destinos que devem ser
+    // ignorados (tabelas de fonte/cor/estilo, metadados, imagens), acentuação
+    // (\'hh em cp1252 e \uN unicode), parágrafos, tabulação e negrito/itálico/
+    // sublinhado. Fonte, tamanho, cor e tabelas ficam de fora — a mesma limitação
+    // que a pré-visualização de DOCX já avisa em tela.
+
+    // Grupos cujo conteúdo é maquinário do arquivo, não texto do documento.
+    const RTF_DESTINOS_IGNORADOS = {
+        fonttbl: 1, colortbl: 1, stylesheet: 1, listtable: 1, listoverridetable: 1,
+        info: 1, pict: 1, object: 1, objdata: 1, filetbl: 1, revtbl: 1, rsidtbl: 1,
+        generator: 1, themedata: 1, colorschememapping: 1, datastore: 1,
+        latentstyles: 1, xmlnstbl: 1, fldinst: 1, panose: 1, falt: 1, template: 1,
+        keycode: 1, nonshppict: 1, upr: 1,
+        // Cabeçalho/rodapé são mobília de página: repetiriam em todo parágrafo.
+        header: 1, headerl: 1, headerr: 1, headerf: 1,
+        footer: 1, footerl: 1, footerr: 1, footerf: 1
+    };
+
+    // cp1252 é latin1 exceto na faixa 0x80-0x9F, onde ficam aspas curvas,
+    // travessão, reticências e afins. Sem esse mapa, um "—" ou um "…" viraria
+    // caractere de controle invisível no meio do texto.
+    const RTF_CP1252_ALTO = [
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178
+    ];
+
+    function rtfByteParaTexto(byte) {
+        if (isNaN(byte)) return '';
+        if (byte >= 0x80 && byte <= 0x9F) return String.fromCharCode(RTF_CP1252_ALTO[byte - 0x80]);
+        return String.fromCharCode(byte);
+    }
+
+    function rtfParaHtml(rtf) {
+        const paragrafos = [];
+        let pilha = [];
+        let est = { b: false, it: false, u: false, ignorar: false, uc: 1 };
+        let runs = [];
+        let buffer = '';
+        let pular = 0;              // caracteres a descartar depois de um \uN
+        let ignoravelProximo = false; // vimos um \* — o destino seguinte é descartável
+        let primeiroControle = false; // a palavra de controle que abre o grupo decide se ele conta
+
+        function flush() {
+            if (!buffer) return;
+            runs.push({ t: buffer, b: est.b, it: est.it, u: est.u });
+            buffer = '';
+        }
+        function fecharParagrafo() {
+            flush();
+            paragrafos.push(runs);
+            runs = [];
+        }
+        function emitir(txt) {
+            if (est.ignorar) return;
+            buffer += txt;
+        }
+
+        // Devolve quantos caracteres crus a mais devem ser saltados (só \binN usa).
+        function aplicarControle(palavra, param) {
+            if (primeiroControle) {
+                primeiroControle = false;
+                if (ignoravelProximo || RTF_DESTINOS_IGNORADOS[palavra] === 1) { est.ignorar = true; }
+            }
+            ignoravelProximo = false;
+
+            switch (palavra) {
+                case 'par': case 'sect': case 'row':
+                    if (!est.ignorar) fecharParagrafo();
+                    break;
+                case 'line': case 'softline':
+                    emitir('\n');
+                    break;
+                case 'tab': case 'cell':
+                    emitir('\t');
+                    break;
+                case 'pard': case 'plain':
+                    flush(); est.b = false; est.it = false; est.u = false;
+                    break;
+                case 'b': flush(); est.b = (param !== 0); break;
+                case 'i': flush(); est.it = (param !== 0); break;
+                case 'ul': flush(); est.u = (param !== 0); break;
+                case 'ulnone': flush(); est.u = false; break;
+                case 'uc': est.uc = (param === null ? 1 : param); break;
+                case 'u':
+                    if (param !== null) {
+                        let cod = param < 0 ? param + 65536 : param;
+                        emitir(String.fromCharCode(cod));
+                        // O \uN vem seguido de uma versão "de reserva" do mesmo
+                        // caractere pra leitores antigos — ela tem que ser jogada fora.
+                        pular = est.uc;
+                    }
+                    break;
+                case 'emdash': emitir('—'); break;
+                case 'endash': emitir('–'); break;
+                case 'lquote': emitir('‘'); break;
+                case 'rquote': emitir('’'); break;
+                case 'ldblquote': emitir('“'); break;
+                case 'rdblquote': emitir('”'); break;
+                case 'bullet': emitir('•'); break;
+                case 'emspace': case 'enspace': emitir(' '); break;
+                case 'bin': return (param && param > 0) ? param : 0;
+                default: break;
+            }
+            return 0;
+        }
+
+        for (let i = 0; i < rtf.length; i++) {
+            const c = rtf.charAt(i);
+
+            if (c === '{') {
+                flush();
+                pilha.push({ b: est.b, it: est.it, u: est.u, ignorar: est.ignorar, uc: est.uc });
+                primeiroControle = true;
+                continue;
+            }
+            if (c === '}') {
+                flush();
+                const anterior = pilha.pop();
+                if (anterior) est = anterior;
+                primeiroControle = false;
+                continue;
+            }
+            if (c === '\\') {
+                const prox = rtf.charAt(i + 1);
+                // Símbolos de controle (escape de um caractere só)
+                if (prox === '\\' || prox === '{' || prox === '}') {
+                    if (pular > 0) pular--; else emitir(prox);
+                    i++; continue;
+                }
+                if (prox === "'") {
+                    const byte = parseInt(rtf.substr(i + 2, 2), 16);
+                    i += 3;
+                    if (pular > 0) { pular--; continue; }
+                    emitir(rtfByteParaTexto(byte));
+                    continue;
+                }
+                if (prox === '*') { ignoravelProximo = true; i++; continue; }
+                if (prox === '~') { if (pular > 0) pular--; else emitir(' '); i++; continue; }
+                if (prox === '_') { if (pular > 0) pular--; else emitir('‑'); i++; continue; }
+                if (prox === '-') { i++; continue; }            // hífen opcional: não imprime
+                if (prox === '\n' || prox === '\r') { if (!est.ignorar) fecharParagrafo(); i++; continue; }
+
+                // Palavra de controle: \palavra[-]?[0-9]* seguida de um espaço opcional
+                const m = /^[a-zA-Z]+/.exec(rtf.slice(i + 1, i + 34));
+                if (!m) { i++; continue; }
+                const palavra = m[0].toLowerCase();
+                let pos = i + 1 + m[0].length;
+                const mp = /^-?[0-9]+/.exec(rtf.slice(pos, pos + 12));
+                const param = mp ? parseInt(mp[0], 10) : null;
+                if (mp) pos += mp[0].length;
+                if (rtf.charAt(pos) === ' ') pos++;   // o espaço delimitador faz parte da palavra
+                const saltar = aplicarControle(palavra, param);
+                i = pos - 1 + saltar;
+                continue;
+            }
+            if (c === '\r' || c === '\n') continue;  // quebras do arquivo não são do texto
+            if (pular > 0) { pular--; continue; }
+            emitir(c);
+        }
+        // Fecha o último parágrafo — mas sem inventar um vazio quando o arquivo
+        // termina logo depois de um \par, que é como praticamente todos terminam.
+        flush();
+        if (runs.length) paragrafos.push(runs);
+
+        let html = '';
+        let vaziosSeguidos = 0;
+        paragrafos.forEach((lista) => {
+            const conteudo = lista.map((r) => {
+                let t = escapeHtml(r.t).replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;').replace(/\n/g, '<br>');
+                if (!t) return '';
+                if (r.b) t = '<b>' + t + '</b>';
+                if (r.it) t = '<i>' + t + '</i>';
+                if (r.u) t = '<u>' + t + '</u>';
+                return t;
+            }).join('');
+            if (!conteudo.replace(/(<br>|&nbsp;|\s)+/g, '')) {
+                // Linha em branco: vale uma de espaçamento, mas RTF costuma empilhar
+                // vários \par seguidos e isso viraria um buraco no meio do texto.
+                if (vaziosSeguidos === 0) html += '<p class="smax-rtf-vazio"></p>';
+                vaziosSeguidos++;
+                return;
+            }
+            vaziosSeguidos = 0;
+            html += '<p>' + conteudo + '</p>';
+        });
+        return html;
+    }
+
+    async function renderizarRtf(blob, body) {
+        // RTF é ASCII com escapes, mas arquivos antigos às vezes trazem bytes
+        // altos crus — decodificar como windows-1252 (e não UTF-8, o padrão do
+        // blob.text()) evita que eles virem "" no meio do texto.
+        let bruto;
+        try {
+            bruto = new TextDecoder('windows-1252').decode(await blob.arrayBuffer());
+        } catch (err) {
+            bruto = await blob.text();
+        }
+        const html = rtfParaHtml(bruto);
+
+        body.classList.remove('smax-center-content');
+        body.innerHTML = '';
+        const wrap = document.createElement('div');
+        wrap.className = 'smax-docx-wrap';
+        wrap.innerHTML = `
+<p class="smax-docx-aviso">ℹ️ Pré-visualização simplificada — só o texto e o negrito/itálico/sublinhado. Use "Baixar" para ver com a formatação original.</p>
+        `;
+        const div = document.createElement('div');
+        div.className = 'smax-docx-content';
+        div.innerHTML = html || '<p><i>Não encontrei texto legível neste arquivo (pode ser só imagem ou estar corrompido).</i></p>';
+        wrap.appendChild(div);
+        body.appendChild(wrap);
+    }
+
     // ============================================================
     // ERROS E SEM PREVIEW
     // ============================================================
@@ -4053,7 +4487,7 @@
 <div class="smax-sem-preview">
 <h3>📎 Pré-visualização não disponível</h3>
 <p>O arquivo <b>${escapeHtml(nomeArquivo)}</b> não tem visualizador integrado neste script.</p>
-<p style="font-size:13px;color:#666;">Tipos suportados: PDF, imagens (PNG/JPG/GIF/WEBP), DOCX e TXT.</p>
+<p style="font-size:13px;color:#666;">Tipos suportados: PDF, imagens (PNG/JPG/GIF/WEBP), DOCX, RTF, planilhas (XLSX/XLSM/XLSB/XLS/ODS) e TXT.</p>
 <button id="smax-btn-baixar-fallback">⬇ Baixar arquivo</button>
 </div>
         `;
@@ -4219,7 +4653,11 @@
 
         lista.forEach((item, idx) => {
             const tipo = detectarTipo(item.nome);
-            const icone = tipo === 'pdf' ? '📕' : tipo === 'imagem' ? '🖼️' : (tipo === 'docx' || tipo === 'doc-legado') ? '📝' : '📎';
+            const icone = tipo === 'pdf' ? '📕'
+                : tipo === 'imagem' ? '🖼️'
+                : tipo === 'planilha' ? '📊'
+                : (tipo === 'docx' || tipo === 'doc-legado' || tipo === 'rtf') ? '📝'
+                : '📎';
             const linha = document.createElement('div');
             linha.className = 'smax-anexos-item';
             linha.innerHTML = `<span class="smax-anexos-item-icone">${icone}</span><span class="smax-anexos-item-nome">${escapeHtml(item.nome)}</span>`;
