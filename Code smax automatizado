@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SMAX AUTOMATIZADO - SGS 2.2.1
 // @namespace    http://tampermonkey.net/
-// @version      1.27.0
-// @description  Robo de opcoes automatizadas para o suporte TJSP, com visualizador de anexos (PDF, imagens, DOCX) integrado direto na tela, sem downloads, navegacao entre anexos e painel de dados da solicitacao. v1.27: simbolo de magistrado = martelo em circulo (marinho) no lugar da foto do SOLICITANTE (celula "Solicitado para", achada pelo nome, nao mais o 1o avatar da linha); vinculo global resolvido em properties/UserOptions/related_properties + fetch dedicado de reserva.
+// @version      1.28.0
+// @description  Robo de opcoes automatizadas para o suporte TJSP, com visualizador de anexos (PDF, imagens, DOCX) integrado direto na tela, sem downloads, navegacao entre anexos e painel de dados da solicitacao. v1.27: simbolo de magistrado = martelo em circulo (marinho) no lugar da foto do SOLICITANTE (celula "Solicitado para", achada pelo nome, nao mais o 1o avatar da linha); vinculo global resolvido em properties/UserOptions/related_properties + fetch dedicado de reserva. v1.27.1: deteccao de numero de processo (CNJ) tolerante — campo proprio e Descricao passam a aceitar os dois formatos (so digitos e formatado com hifen/pontos/barras/espacos), numero partido por tag HTML, NBSP e hifen tipografico; campo proprio lido tambem em properties/related_properties e em todas as posicoes de UserOptions; painel de Dados varre a tela quando o REST nao traz processo. v1.28: passar o cursor pelo icone de vinculo (global ou solicitacao relacionada) mostra o TITULO e o status do chamado do outro lado, na grade, na Consulta Rapida e no painel flutuante — busca sob demanda, com cache por sessao.
 // @author       Leonardo
 // @match        https://suporte.tjsp.jus.br/*
 // @require      https://unpkg.com/mammoth@1.6.0/mammoth.browser.min.js
@@ -1064,32 +1064,121 @@
         return s || "";
     }
 
-    // Padrão CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO (20 dígitos). O valor salvo no
-    // campo NumerodoProcesso_c vem só com os dígitos, sem separadores.
+    // ============================================================
+    // NUMEROS DE PROCESSO (CNJ) — deteccao tolerante
+    // ============================================================
+    // Padrao CNJ: NNNNNNN-DD.AAAA.J.TR.OOOO (20 digitos). Na pratica o numero
+    // chega de varias formas: so os digitos (como o campo NumerodoProcesso_c
+    // costuma gravar), formatado com hifen e pontos (como as pessoas digitam e
+    // colam na Descricao), com barra no lugar do ponto, com espacos sobrando,
+    // com hifen "tipografico" (–) ou partido por tags/entidades HTML no meio.
+    // Antes cada fonte so enxergava UM desses formatos (campo proprio = so
+    // digitos crus; Descricao = so o formatado), entao um numero formatado no
+    // campo proprio — ou colado so em digitos na Descricao — passava batido e a
+    // solicitacao aparecia sem processo nenhum. Agora as duas fontes usam o
+    // mesmo detector, que cobre as duas familias de formato.
     function formatarNumeroProcessoCnj(numeroDigitos) {
         var digitos = String(numeroDigitos || "");
         return digitos.slice(0, 7) + "-" + digitos.slice(7, 9) + "." + digitos.slice(9, 13) + "." + digitos.slice(13, 14) + "." + digitos.slice(14, 16) + "." + digitos.slice(16, 20);
     }
 
-    // O campo NumerodoProcesso_c e texto livre (ate 140 caracteres) — as vezes tem
-    // mais de um numero de processo digitado ali (concatenados, ou separados por
-    // espaço/virgula/quebra de linha). Cada CNJ tem exatamente 20 digitos, entao
-    // varrer o texto atras de blocos de 20 digitos pega todos, nesses dois casos.
-    function extrairProcessosDoCampoConsulta(valorCampo) {
-        var texto = String(valorCampo || ""), encontrados = texto.match(/\d{20}/g), i, lista = [];
-        if (!encontrados) { return lista; }
-        for (i = 0; i < encontrados.length; i++) { lista.push(formatarNumeroProcessoCnj(encontrados[i])); }
+    // Tudo que atrapalha a varredura vira espaco ou some: HTML escapado (as
+    // vezes em dois niveis), tags, espacos "invisiveis" (NBSP, zero-width) e
+    // hifens tipograficos. Tags inline somem SEM separar os digitos, porque o
+    // editor do SMAX costuma partir um numero colado no meio (ex.:
+    // "<span>1234567-89.2024</span><span>.8.26.0100</span>") — ja as tags de
+    // bloco viram espaco, pra nao grudar numeros de paragrafos diferentes.
+    function normalizarTextoProcessoConsulta(valor) {
+        var texto = decodificarEntidadesHtmlConsulta(String(valor || ""));
+        if (/&(?:lt|gt|amp|nbsp|#\d+);/i.test(texto)) { texto = decodificarEntidadesHtmlConsulta(texto); }
+        return texto
+            .replace(/<\s*(?:br|\/p|\/div|\/li|\/tr|\/td|\/th|\/h[1-6])[^>]*>/gi, " ")
+            .replace(/<[^>]*>/g, "")
+            .replace(/[\u00a0\u2007\u202f]/g, " ")
+            .replace(/[\u200b-\u200d\ufeff\u00ad]/g, "")
+            .replace(/[\u2010-\u2015\u2212]/g, "-");
+    }
+
+    // Separador tolerante entre os blocos do CNJ: pontuacao opcional, com ou sem
+    // espaco em volta (cobre "1234567-89.2024.8.26.0100", "1234567 89 2024 8 26
+    // 0100" e o numero colado sem nada no meio).
+    // Montada a partir de literais (.source) em vez de string com escape, pra
+    // nao depender de contrabarra dentro de aspas.
+    var SEPARADOR_CNJ_CONSULTA = /\s{0,3}[-./]?\s{0,3}/.source;
+    var BLOCOS_CNJ_CONSULTA = [/\d{7}/, /\d{2}/, /\d{4}/, /\d/, /\d{2}/, /\d{4}/];
+    var REGEX_CNJ_CONSULTA = new RegExp(
+        /(^|[^0-9])/.source +
+        "(" + BLOCOS_CNJ_CONSULTA.map(function (bloco) { return bloco.source; }).join(SEPARADOR_CNJ_CONSULTA) + ")" +
+        /(?![0-9])/.source,
+        "g"
+    );
+    var REGEX_DIGITOS_CNJ_CONSULTA = /(^|[^0-9])([0-9]{20,})(?![0-9])/g;
+
+    // Estrutura do CNJ: os digitos 10-13 sao o ano e o 14 e o segmento do
+    // Judiciario (1 a 9, nunca 0). Serve pra distinguir um processo de qualquer
+    // outro bloco de 20 digitos solto num texto livre (codigo de barras, numero
+    // de protocolo, sequencia de codigos). So e exigido na Descricao — no campo
+    // proprio o que esta digitado ali e, por definicao, numero de processo.
+    function pareceNumeroCnjConsulta(digitos) {
+        var ano, segmento;
+        if (!digitos || digitos.length !== 20) { return false; }
+        ano = Number(digitos.slice(9, 13));
+        segmento = Number(digitos.slice(13, 14));
+        return ano >= 1900 && ano <= (new Date().getFullYear() + 1) && segmento >= 1 && segmento <= 9;
+    }
+
+    // Varre um texto qualquer (campo proprio, Descricao ou tela) e devolve os
+    // numeros encontrados ja formatados no padrao CNJ.
+    // opcoes.exigirEstrutura: descarta candidato que nao tem cara de CNJ (ano /
+    //   segmento fora da faixa) — ligado pra texto livre, desligado pro campo.
+    function extrairProcessosCnjConsulta(texto, opcoes) {
+        var normalizado = normalizarTextoProcessoConsulta(texto), lista = [], m, digitos, i, bloco;
+        opcoes = opcoes || {};
+        if (!normalizado) { return lista; }
+
+        // 1) Blocos de digitos crus. 20 digitos = um processo; 40 = dois numeros
+        //    colados (acontece de digitarem um atras do outro no campo proprio).
+        REGEX_DIGITOS_CNJ_CONSULTA.lastIndex = 0;
+        while ((m = REGEX_DIGITOS_CNJ_CONSULTA.exec(normalizado)) !== null) {
+            bloco = m[2];
+            for (i = 0; i + 20 <= bloco.length; i += 20) {
+                digitos = bloco.substr(i, 20);
+                if (opcoes.exigirEstrutura && !pareceNumeroCnjConsulta(digitos)) { continue; }
+                lista.push(digitos);
+            }
+        }
+
+        // 2) Numero formatado (hifen/pontos/barras/espacos). O candidato so vale
+        //    se tiver pelo menos duas pontuacoes de verdade — sem isso, uma
+        //    sequencia inocente de numeros separados por espaco ("1234567 12
+        //    2024 1 10 2025") viraria "processo". Numero sem nenhum separador ja
+        //    foi pego no passo 1.
+        REGEX_CNJ_CONSULTA.lastIndex = 0;
+        while ((m = REGEX_CNJ_CONSULTA.exec(normalizado)) !== null) {
+            if (m[2].replace(/[^-./]/g, "").length < 2) { continue; }
+            digitos = m[2].replace(/\D+/g, "");
+            if (digitos.length !== 20) { continue; }
+            if (opcoes.exigirEstrutura && !pareceNumeroCnjConsulta(digitos)) { continue; }
+            lista.push(digitos);
+        }
+
+        for (i = 0; i < lista.length; i++) { lista[i] = formatarNumeroProcessoCnj(lista[i]); }
         return lista;
     }
 
-    // Mesma ideia pra Descrição, so que o padrao ali ja vem formatado (com
-    // hifen/pontos) em vez de digitos crus — busca TODAS as ocorrencias, nao so
+    // O campo NumerodoProcesso_c e texto livre (ate 140 caracteres): pode ter
+    // mais de um numero (concatenados, ou separados por espaco/virgula/quebra de
+    // linha) e pode estar tanto em digitos crus quanto ja formatado.
+    function extrairProcessosDoCampoConsulta(valorCampo) {
+        return extrairProcessosCnjConsulta(valorCampo, { exigirEstrutura: false });
+    }
+
+    // Mesma varredura na Descricao — texto livre e cheio de outros numeros, por
+    // isso aqui vale a checagem de estrutura. Pega TODAS as ocorrencias, nao so
     // a primeira, pra cobrir descricao com mais de um processo citado.
     function extrairProcessosDaDescricaoConsulta(descricaoHtml) {
-        var texto;
         if (!descricaoHtml) { return []; }
-        texto = decodificarEntidadesHtmlConsulta(String(descricaoHtml)).replace(/<[^>]+>/g, " ");
-        return texto.match(/\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}/g) || [];
+        return extrairProcessosCnjConsulta(descricaoHtml, { exigirEstrutura: true });
     }
 
     // Junta os numeros achados no campo proprio com os achados na Descricao —
@@ -1103,6 +1192,12 @@
         }
         return resultado;
     }
+
+    // Ponte pro Modulo 2 (IIFE separada) usar o mesmo detector na varredura de
+    // reserva feita sobre o texto da tela.
+    window.__tjspProcessosCnj = {
+        extrairDeTexto: function (texto) { return extrairProcessosCnjConsulta(texto, { exigirEstrutura: true }); }
+    };
 
     function normalizarDadosConsulta(payload, numeroChamado) {
         var dados = (payload && payload.EntityData) || {}, p = dados.properties || {}, rel = dados.related_properties || {};
@@ -1129,17 +1224,35 @@
             }
         } catch (e) {}
 
-        // Nº do processo fica dentro de UserOptions (JSON-string), não é um
-        // campo direto de Request — mesma origem que o "Número do processo"
-        // já lido no painel flutuante "Dados da solicitação" (Módulo 2).
+        // Nº do processo costuma ficar dentro de UserOptions (JSON-string), não é
+        // um campo direto de Request — mesma origem que o "Número do processo"
+        // já lido no painel flutuante "Dados da solicitação" (Módulo 2). Só que,
+        // dependendo do layout que a API devolve, ele também aparece direto em
+        // properties, em outra posição de complexTypeProperties ou em
+        // related_properties (mesma variação já tratada nos campos de global
+        // logo abaixo). Ler apenas a primeira posição de UserOptions fazia a
+        // Consulta Rápida mostrar "Não informado" mesmo com o campo próprio
+        // preenchido na solicitação — agora as origens possíveis são todas lidas
+        // e concatenadas (com espaço, pra nunca grudar dois números).
+        var valoresCampoProcesso = [], propsItemUserOptions;
+        function anotarCampoProcessoConsulta(valor) {
+            if (valor === undefined || valor === null || valor === "") { return; }
+            valoresCampoProcesso.push(String(valor));
+        }
         propsUserOptions = {};
         try {
             parsedUserOptions = JSON.parse(p.UserOptions || "{}");
-            if (Array.isArray(parsedUserOptions.complexTypeProperties) && parsedUserOptions.complexTypeProperties[0]) {
-                propsUserOptions = parsedUserOptions.complexTypeProperties[0].properties || {};
-                numeroProcesso = propsUserOptions.NumerodoProcesso_c || "";
+            if (Array.isArray(parsedUserOptions.complexTypeProperties)) {
+                for (i = 0; i < parsedUserOptions.complexTypeProperties.length; i++) {
+                    propsItemUserOptions = (parsedUserOptions.complexTypeProperties[i] || {}).properties || {};
+                    if (i === 0) { propsUserOptions = propsItemUserOptions; }
+                    anotarCampoProcessoConsulta(propsItemUserOptions.NumerodoProcesso_c);
+                }
             }
         } catch (e) {}
+        anotarCampoProcessoConsulta(p.NumerodoProcesso_c);
+        anotarCampoProcessoConsulta(rel.NumerodoProcesso_c);
+        numeroProcesso = valoresCampoProcesso.join(" ");
 
         // Melhoria 4: os campos custom de "global" (IsGlobal_c / GlobalId_c)
         // podem vir em 3 lugares dependendo do layout — direto em properties,
@@ -1169,6 +1282,10 @@
 
         return {
             id: String(p.Id || numeroChamado),
+            // DisplayLabel e o titulo/assunto da solicitacao. Ja vinha no payload
+            // e era descartado — agora alimenta o tooltip de vinculo (o titulo do
+            // chamado global mostrado quando o cursor para no icone).
+            titulo: p.DisplayLabel || "",
             descricaoHtml: p.Description || "",
             // Confirmado via captura real do DevTools: o campo se chama "Solution",
             // nao "Resolution" (esse era o nome errado usado antes, por isso a
@@ -1274,6 +1391,7 @@
                 itens.push({
                     id: String(props.Id),
                     rotulo: props.DisplayLabel || ("Solicitação " + props.Id),
+                    status: normalizarRotuloConsulta(props.StatusSCCDSMAX_c || props.Status || ""),
                     data: formatarDataConsulta(quando)
                 });
             }
@@ -1302,6 +1420,191 @@
         }).catch(function () { return dados; });
     }
 
+    // ============================================================
+    // TOOLTIP DE VINCULO — titulo do chamado global/relacionado no hover
+    // ============================================================
+    // O icone de vinculo (o 🌐 da grade, o da Consulta Rapida e o do painel
+    // flutuante) dizia so o NUMERO do chamado do outro lado. Agora, parando o
+    // cursor em cima, ele mostra o TITULO e o status desse chamado — da pra
+    // saber do que trata a global sem abrir a solicitacao.
+    //
+    // A consulta e sob demanda (so quando o cursor para no icone), com cache por
+    // id na sessao e dedupe das requisicoes em voo: rolar uma grade cheia de
+    // icones nao dispara nada sozinho, e voltar no mesmo icone nao repete a
+    // busca. Quando quem monta o icone JA sabe o titulo (a grade e a lista de
+    // relacionados sabem), ele vai no proprio atributo e nenhuma requisicao
+    // acontece.
+    var cacheResumoVinculo = {};
+    var promessasResumoVinculo = {};
+
+    function guardarResumoVinculo(id, titulo, status) {
+        var chave = String(id || "");
+        if (!chave || !titulo) { return; }
+        cacheResumoVinculo[chave] = { id: chave, titulo: titulo, status: status || "" };
+    }
+
+    function buscarResumoVinculo(id) {
+        var chave = String(id || ""), url;
+        if (!chave) { return Promise.reject(new Error("sem id")); }
+        if (Object.prototype.hasOwnProperty.call(cacheResumoVinculo, chave)) { return Promise.resolve(cacheResumoVinculo[chave]); }
+        if (promessasResumoVinculo[chave]) { return promessasResumoVinculo[chave]; }
+        url = obterRestBaseConsulta() + "/ems/Request/" + chave + "?layout=Id,DisplayLabel,Status,StatusSCCDSMAX_c";
+        promessasResumoVinculo[chave] = buscarJsonConsulta(url).then(function (resp) {
+            var props = (resp && resp.properties) || (resp && resp.entities && resp.entities[0] && resp.entities[0].properties) || {};
+            var resumo = {
+                id: chave,
+                titulo: props.DisplayLabel || "",
+                status: normalizarRotuloConsulta(props.StatusSCCDSMAX_c || props.Status || "")
+            };
+            cacheResumoVinculo[chave] = resumo;
+            delete promessasResumoVinculo[chave];
+            return resumo;
+        }).catch(function (erro) {
+            // De proposito NAO entra no cache: uma falha de rede pontual nao pode
+            // deixar o titulo indisponivel pelo resto da sessao.
+            delete promessasResumoVinculo[chave];
+            throw erro;
+        });
+        return promessasResumoVinculo[chave];
+    }
+
+    // Monta os atributos do tooltip pra quem constroi HTML como string (Consulta
+    // Rapida). titulo/status sao opcionais: quando ja sao conhecidos, o tooltip
+    // abre preenchido, sem requisicao nenhuma.
+    function atributosTooltipVinculo(id, rotulo, titulo, status, dica) {
+        var attrs = " data-tjsp-vinculo-id='" + escapeHtmlConsulta(id) + "'" +
+            " data-tjsp-vinculo-rotulo='" + escapeHtmlConsulta(rotulo) + "'";
+        if (titulo) { attrs += " data-tjsp-vinculo-titulo='" + escapeHtmlConsulta(titulo) + "'"; }
+        if (status) { attrs += " data-tjsp-vinculo-status='" + escapeHtmlConsulta(status) + "'"; }
+        if (dica) { attrs += " data-tjsp-vinculo-dica='" + escapeHtmlConsulta(dica) + "'"; }
+        return attrs;
+    }
+
+    var tooltipVinculoEl = null;
+    var tooltipVinculoIdAtual = "";
+    var esconderTooltipVinculoTimeout = null;
+
+    // Qualquer elemento marcado com data-tjsp-vinculo-id dispara o tooltip —
+    // assim a grade, a Consulta Rapida e o painel flutuante (Modulo 2, IIFE
+    // separada) so precisam marcar o icone, sem cada um instalar seu listener.
+    function alvoTooltipVinculo(el) {
+        return (el && el.closest) ? el.closest("[data-tjsp-vinculo-id]") : null;
+    }
+
+    function criarTooltipVinculo() {
+        if (tooltipVinculoEl) { return tooltipVinculoEl; }
+        criarEstilo();
+        tooltipVinculoEl = document.createElement("div");
+        tooltipVinculoEl.id = "tjsp-tooltip-vinculo";
+        document.body.appendChild(tooltipVinculoEl);
+        return tooltipVinculoEl;
+    }
+
+    function posicionarTooltipVinculo(x, y) {
+        var margem = 14, largura, altura, left, top;
+        if (!tooltipVinculoEl) { return; }
+        largura = tooltipVinculoEl.offsetWidth || 260;
+        altura = tooltipVinculoEl.offsetHeight || 70;
+        left = x + margem; top = y + margem;
+        if (left + largura > window.innerWidth) { left = x - largura - margem; }
+        if (top + altura > window.innerHeight) { top = y - altura - margem; }
+        tooltipVinculoEl.style.left = Math.max(4, left) + "px";
+        tooltipVinculoEl.style.top = Math.max(4, top) + "px";
+    }
+
+    function renderizarTooltipVinculo(rotulo, id, corpoHtml, dica) {
+        var card = criarTooltipVinculo();
+        card.innerHTML =
+            "<div class='tjsp-tooltip-vinculo-rotulo'>" + escapeHtmlConsulta(rotulo) + "</div>" +
+            "<div class='tjsp-tooltip-vinculo-id'>#" + escapeHtmlConsulta(id) + "</div>" +
+            corpoHtml +
+            (dica ? "<div class='tjsp-tooltip-vinculo-dica'>" + escapeHtmlConsulta(dica) + "</div>" : "");
+        card.style.display = "block";
+    }
+
+    function corpoTooltipVinculo(resumo) {
+        var html = "<div class='tjsp-tooltip-vinculo-titulo'>" + escapeHtmlConsulta(resumo.titulo || "Sem título") + "</div>";
+        if (resumo.status) { html += "<div class='tjsp-tooltip-vinculo-status'>" + escapeHtmlConsulta(resumo.status) + "</div>"; }
+        return html;
+    }
+
+    function mostrarTooltipVinculo(alvo, x, y) {
+        var id = String(alvo.getAttribute("data-tjsp-vinculo-id") || "");
+        var rotulo = alvo.getAttribute("data-tjsp-vinculo-rotulo") || "Chamado vinculado";
+        var dica = alvo.getAttribute("data-tjsp-vinculo-dica") || "";
+        if (!id) { return; }
+        // mouseover dispara de novo a cada elemento filho por onde o cursor passa
+        // dentro do mesmo icone: se ja e o mesmo vinculo, so reposiciona (sem
+        // redesenhar, que piscaria o conteudo e reiniciaria o "Buscando...").
+        if (id === tooltipVinculoIdAtual && tooltipVinculoEl && tooltipVinculoEl.style.display === "block") {
+            posicionarTooltipVinculo(x, y);
+            return;
+        }
+        guardarResumoVinculo(id, alvo.getAttribute("data-tjsp-vinculo-titulo") || "", alvo.getAttribute("data-tjsp-vinculo-status") || "");
+        tooltipVinculoIdAtual = id;
+
+        if (Object.prototype.hasOwnProperty.call(cacheResumoVinculo, id)) {
+            renderizarTooltipVinculo(rotulo, id, corpoTooltipVinculo(cacheResumoVinculo[id]), dica);
+            posicionarTooltipVinculo(x, y);
+            return;
+        }
+
+        renderizarTooltipVinculo(rotulo, id, "<div class='tjsp-tooltip-vinculo-carregando'>Buscando título…</div>", dica);
+        posicionarTooltipVinculo(x, y);
+        buscarResumoVinculo(id).then(function (resumo) {
+            // O cursor pode ter pulado pra outro icone enquanto a resposta vinha.
+            if (tooltipVinculoIdAtual !== id) { return; }
+            renderizarTooltipVinculo(rotulo, id, corpoTooltipVinculo(resumo), dica);
+        }).catch(function () {
+            if (tooltipVinculoIdAtual !== id) { return; }
+            renderizarTooltipVinculo(rotulo, id, "<div class='tjsp-tooltip-vinculo-erro'>Não foi possível carregar o título.</div>", dica);
+        });
+    }
+
+    function esconderTooltipVinculo() {
+        if (tooltipVinculoEl) { tooltipVinculoEl.style.display = "none"; }
+        tooltipVinculoIdAtual = "";
+    }
+
+    function cancelarEsconderTooltipVinculo() {
+        if (esconderTooltipVinculoTimeout) { window.clearTimeout(esconderTooltipVinculoTimeout); esconderTooltipVinculoTimeout = null; }
+    }
+
+    function agendarEsconderTooltipVinculo() {
+        cancelarEsconderTooltipVinculo();
+        esconderTooltipVinculoTimeout = window.setTimeout(function () {
+            esconderTooltipVinculo();
+            esconderTooltipVinculoTimeout = null;
+        }, 200);
+    }
+
+    // Delegado no document, igual ao card de especialista: a grade recria linhas
+    // na rolagem e o Angular re-renderiza a tela inteira, entao um listener por
+    // icone se perderia junto. O tooltip em si tem pointer-events:none, entao
+    // nunca rouba o hover do proprio icone.
+    function instalarTooltipVinculo() {
+        document.addEventListener("mouseover", function (event) {
+            var alvo = alvoTooltipVinculo(event.target);
+            if (!alvo) { return; }
+            cancelarEsconderTooltipVinculo();
+            mostrarTooltipVinculo(alvo, event.clientX, event.clientY);
+        });
+        document.addEventListener("mousemove", function (event) {
+            if (tooltipVinculoEl && tooltipVinculoEl.style.display === "block" && alvoTooltipVinculo(event.target)) {
+                posicionarTooltipVinculo(event.clientX, event.clientY);
+            }
+        });
+        document.addEventListener("mouseout", function (event) {
+            if (!alvoTooltipVinculo(event.target)) { return; }
+            agendarEsconderTooltipVinculo();
+        });
+        // Rolagem (inclusive a interna da grade, por isso em captura): sem isso o
+        // tooltip ficaria parado apontando pra uma linha que ja saiu do lugar.
+        window.addEventListener("scroll", function () {
+            if (tooltipVinculoIdAtual) { esconderTooltipVinculo(); }
+        }, true);
+    }
+
     // Ponte pro Modulo 2 (Visualizador de Anexos, IIFE separada): o painel
     // flutuante "Dados da solicitação" usava simulação de hover no campo
     // "Solicitado para" da propria tela pra ler nome/matricula/unidade — trocado
@@ -1327,6 +1630,11 @@
                 processos: dados.numerosProcesso || [],
                 // Melhoria 2 / 4 / 5.
                 cargo: dados.solicitanteCargo || "",
+                // Titulo/status da propria solicitacao: o painel usa no tooltip do
+                // icone quando ELA e a global (nesse caso o vinculo aponta pra ela
+                // mesma, entao o titulo ja esta em maos e nao precisa de consulta).
+                titulo: dados.titulo || "",
+                status: dados.statusOperacional || "",
                 magistrado: !!dados.ehMagistrado,
                 ehGlobal: !!dados.ehGlobal,
                 globalVinculadoId: dados.globalVinculadoId || "",
@@ -1438,17 +1746,28 @@
     // Melhoria 4: linha "Vínculo" na Consulta Rápida — badge forte quando a
     // propria solicitacao E global, e link pro global quando ela esta vinculada
     // a um.
+    // O atributo title nativo foi trocado pelos data-tjsp-vinculo-*: os dois
+    // juntos abririam DOIS balões sobrepostos no mesmo hover, e o nosso mostra a
+    // mesma informação com o título do chamado por cima.
     function campoVinculoGlobalConsulta(dados) {
         if (dados.ehGlobal) {
+            // Aqui o vínculo aponta pra própria solicitação: título e status já
+            // estão em mãos, o tooltip abre sem nenhuma requisição.
+            var attrsProprio = atributosTooltipVinculo(dados.id, "Esta solicitação é a global", dados.titulo, dados.statusOperacional, "");
             return "<div><small>Vínculo</small><span class='tjsp-consulta-campo-valor'>" +
-                "<span class='tjsp-consulta-global-badge tjsp-consulta-global-badge-e' title='Esta solicitação é uma global'>🌐 Solicitação GLOBAL</span>" +
+                "<span class='tjsp-consulta-global-badge tjsp-consulta-global-badge-e'" + attrsProprio + ">🌐 Solicitação GLOBAL</span>" +
                 "</span></div>";
         }
         if (dados.globalVinculadoId) {
             var url = location.origin + "/saw/Request/" + dados.globalVinculadoId + "/general";
+            // Título do global desconhecido neste ponto — o tooltip busca sozinho
+            // no primeiro hover e guarda em cache. Marcado tanto no selo quanto no
+            // link, pra funcionar em qualquer um dos dois.
+            var attrsGlobal = atributosTooltipVinculo(dados.globalVinculadoId, "Chamado global", "", "", "");
+            var attrsLink = atributosTooltipVinculo(dados.globalVinculadoId, "Chamado global", "", "", "Clique para abrir em nova guia");
             return "<div><small>Vínculo</small><span class='tjsp-consulta-campo-valor'>" +
-                "<span class='tjsp-consulta-global-badge'>🌐 Vinculada ao global</span>" +
-                "<a class='tjsp-consulta-global-link' href='" + url + "' target='_blank' rel='noopener noreferrer'>#" + escapeHtmlConsulta(dados.globalVinculadoId) + "</a>" +
+                "<span class='tjsp-consulta-global-badge'" + attrsGlobal + ">🌐 Vinculada ao global</span>" +
+                "<a class='tjsp-consulta-global-link' href='" + url + "' target='_blank' rel='noopener noreferrer'" + attrsLink + ">#" + escapeHtmlConsulta(dados.globalVinculadoId) + "</a>" +
                 "<button class='tjsp-consulta-copiar' type='button' data-copiar='" + escapeHtmlConsulta(dados.globalVinculadoId) + "' title='Copiar'>" + criarSvgCopiar() + "</button>" +
                 "</span></div>";
         }
@@ -1460,7 +1779,11 @@
         var av = dados && dados.avisoMesmaData, i, linhas = "";
         if (!av || !av.total) { return ""; }
         for (i = 0; i < av.itens.length; i++) {
-            linhas += "<a class='tjsp-consulta-aviso-item' href='" + location.origin + "/saw/Request/" + escapeHtmlConsulta(av.itens[i].id) + "/general' target='_blank' rel='noopener noreferrer'>#" +
+            // Relacionados: título e status já vieram na busca do aviso, então o
+            // tooltip só repete sem truncar (a linha da lista corta com reticências).
+            linhas += "<a class='tjsp-consulta-aviso-item'" +
+                atributosTooltipVinculo(av.itens[i].id, "Solicitação relacionada", av.itens[i].rotulo, av.itens[i].status, "Clique para abrir em nova guia") +
+                " href='" + location.origin + "/saw/Request/" + escapeHtmlConsulta(av.itens[i].id) + "/general' target='_blank' rel='noopener noreferrer'>#" +
                 escapeHtmlConsulta(av.itens[i].id) + " — " + escapeHtmlConsulta(av.itens[i].rotulo) +
                 " <span class='tjsp-consulta-aviso-data'>(" + escapeHtmlConsulta(av.itens[i].data) + ")</span></a>";
         }
@@ -1953,6 +2276,18 @@
             "#tjsp-card-especialista .tjsp-card-especialista-copiar:hover{background:#d5e9fa}",
             "#tjsp-card-especialista .tjsp-card-especialista-copiar svg{width:11px;height:11px;stroke:currentColor;display:block}",
             "#tjsp-card-especialista .tjsp-card-especialista-ausente{display:inline-block;margin-left:5px;font-size:8.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;padding:1px 5px;border-radius:4px;background:#ffe1df;color:#a11f19;vertical-align:middle}",
+            // Tooltip de vinculo (titulo do chamado global/relacionado). z-index
+            // acima do overlay da Consulta Rapida, que ja usa 2000000, pra
+            // funcionar tambem dentro do modal. pointer-events:none pra ele nunca
+            // ficar entre o cursor e o icone que o abriu.
+            "#tjsp-tooltip-vinculo{display:none;position:fixed;z-index:2147483000;max-width:330px;background:#fff;border:1px solid #d5e0ea;border-radius:8px;box-shadow:0 10px 28px rgba(16,39,64,.3);font-family:Arial,sans-serif;padding:8px 11px;pointer-events:none}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-rotulo{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#7a8b9b}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-id{font-size:12px;font-weight:800;color:#12558f;margin-top:1px}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-titulo{font-size:12.5px;color:#273746;margin-top:4px;line-height:1.35}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-status{display:inline-block;margin-top:6px;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;padding:2px 6px;border-radius:4px;background:#eaf4fd;color:#12558f}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-carregando{font-size:11.5px;color:#7a8b9b;margin-top:4px;font-style:italic}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-erro{font-size:11.5px;color:#a11f19;margin-top:4px}",
+            "#tjsp-tooltip-vinculo .tjsp-tooltip-vinculo-dica{font-size:10px;color:#8a97a6;margin-top:6px;padding-top:5px;border-top:1px solid #eef1f4}",
             ".tjsp-editor-toolbar-group{display:inline-flex!important;align-items:center!important;gap:6px!important;margin-left:9px!important;padding-left:9px!important;border-left:1px solid #b8c7d8!important;vertical-align:middle!important;height:30px!important}",
             ".tjsp-editor-toolbar-btn{width:30px!important;height:30px!important;min-width:30px!important;min-height:30px!important;padding:0!important;border:1px solid #005a9e!important;border-radius:8px!important;cursor:pointer!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;box-shadow:0 2px 6px rgba(0,90,158,.35),inset 0 1px 0 rgba(255,255,255,.35)!important;transition:filter .15s ease,box-shadow .15s ease,transform .10s ease!important;position:relative!important;overflow:hidden!important;opacity:1!important;filter:none!important;box-sizing:border-box!important}",
             ".tjsp-editor-toolbar-btn svg{width:18px!important;height:18px!important;display:block!important;stroke:#fff!important;stroke-width:2!important;filter:drop-shadow(0 1px 1px rgba(0,0,0,.28))!important;opacity:1!important}",
@@ -2028,8 +2363,14 @@
                         magistrado: !!d.ehMagistrado,
                         nome: (d.solicitanteNome && d.solicitanteNome !== "Não informado") ? d.solicitanteNome : "",
                         ehGlobal: !!d.ehGlobal,
-                        globalVinculadoId: d.globalVinculadoId || ""
+                        globalVinculadoId: d.globalVinculadoId || "",
+                        titulo: d.titulo || "",
+                        status: d.statusOperacional || ""
                     };
+                    // Esta consulta ja trouxe titulo e status desta solicitacao —
+                    // semear o cache do tooltip evita uma segunda requisicao quando
+                    // OUTRA linha da mesma grade estiver vinculada justamente a ela.
+                    guardarResumoVinculo(tarefa.id, info.titulo, info.status);
                     cacheEnriquecimentoGrade[tarefa.id] = info;
                     try { tarefa.aplicar(info); } catch (e) {}
                 }).catch(function () {
@@ -2107,13 +2448,20 @@
         if (info.ehGlobal) {
             var g1 = document.createElement("span");
             g1.className = "tjsp-grade-flag tjsp-grade-flag-global-e";
-            g1.title = "Solicitação global";
+            // Sem title nativo: o tooltip proprio (data-tjsp-vinculo-*) ja diz o
+            // mesmo e ainda mostra o titulo — os dois juntos abririam dois baloes.
+            g1.setAttribute("data-tjsp-vinculo-id", numeroChamado);
+            g1.setAttribute("data-tjsp-vinculo-rotulo", "Esta solicitação é a global");
+            if (info.titulo) { g1.setAttribute("data-tjsp-vinculo-titulo", info.titulo); }
+            if (info.status) { g1.setAttribute("data-tjsp-vinculo-status", info.status); }
             g1.textContent = "🌐";
             flags.appendChild(g1);
         } else if (info.globalVinculadoId) {
             var g2 = document.createElement("a");
             g2.className = "tjsp-grade-flag tjsp-grade-flag-global";
-            g2.title = "Vinculada ao global #" + info.globalVinculadoId + " — abrir em nova guia";
+            g2.setAttribute("data-tjsp-vinculo-id", info.globalVinculadoId);
+            g2.setAttribute("data-tjsp-vinculo-rotulo", "Chamado global");
+            g2.setAttribute("data-tjsp-vinculo-dica", "Clique para abrir em nova guia");
             g2.href = location.origin + "/saw/Request/" + info.globalVinculadoId + "/general";
             g2.target = "_blank";
             g2.rel = "noopener noreferrer";
@@ -2650,6 +2998,7 @@
         criarEstilo();
         aplicarCorDestaqueConsultaRapida();
         instalarCardEspecialistaPorFinal();
+        instalarTooltipVinculo();
         executarCicloAtualizacao();
         observer = new MutationObserver(executarCicloAtualizacao);
         observer.observe(document.body, { childList: true, subtree: true });
@@ -2664,7 +3013,7 @@
         // em si ou o agendamento das tentativas. Podem ser removidos depois de resolvido.
         window.__tjspInstalarBotoesEditores = instalarBotoesEditores;
         window.__tjspContarGrupos = function () { return document.querySelectorAll(".tjsp-editor-toolbar-group").length; };
-        console.log("[TJSP] Robo de automacoes carregado. Versao 1.27.0.");
+        console.log("[TJSP] Robo de automacoes carregado. Versao 1.28.0.");
     }
 
     if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", iniciar); } else { iniciar(); }
@@ -3926,7 +4275,8 @@
         if (dadosSolicitacaoCache && dadosSolicitacaoCache.pessoa) return Promise.resolve(dadosSolicitacaoCache);
         if (promessaDadosSolicitacao) return promessaDadosSolicitacao;
         if (!forcar && tentativasAutomaticas >= MAX_TENTATIVAS_AUTOMATICAS) {
-            return Promise.resolve(dadosSolicitacaoCache || { pessoa: null, processo: extrairNumeroProcesso() });
+            const daTela = extrairProcessosDaTela();
+            return Promise.resolve(dadosSolicitacaoCache || { pessoa: null, processo: daTela.join('; '), processos: daTela });
         }
         tentativasAutomaticas++;
 
@@ -3946,6 +4296,8 @@
                 magistrado: !!info.magistrado,
                 ehGlobal: !!info.ehGlobal,
                 globalVinculadoId: info.globalVinculadoId || '',
+                titulo: info.titulo || '',
+                status: info.status || '',
                 avisoMesmaData: info.avisoMesmaData || { total: 0, itens: [] }
             };
             if (pessoa) dadosSolicitacaoCache = resultado; // só fixa no cache se deu certo — permite tentar de novo se falhou
@@ -4033,36 +4385,73 @@
     // clique/hover nenhuma na tela real: elimina o "flash" do card e o efeito
     // colateral de mexer no "Mostrar mais" da aba Geral enquanto o usuário
     // compõe uma resposta em Discussões.
-    const EXTRAS_VAZIOS = { processos: [], magistrado: false, ehGlobal: false, globalVinculadoId: '', avisoMesmaData: { total: 0, itens: [] } };
+    const EXTRAS_VAZIOS = { magistrado: false, ehGlobal: false, globalVinculadoId: '', titulo: '', status: '', avisoMesmaData: { total: 0, itens: [] } };
 
     async function obterDadosSolicitante() {
         const numeroChamado = extrairNumeroChamadoAtual();
         if (!numeroChamado || !window.__tjspDadosSolicitacaoBridge) {
-            return { pessoa: null, processoCampo: extrairNumeroProcesso(), ...EXTRAS_VAZIOS };
+            const daTela = extrairProcessosDaTela();
+            return { pessoa: null, processoCampo: daTela[0] || null, processos: daTela, ...EXTRAS_VAZIOS };
         }
         try {
             const dados = await window.__tjspDadosSolicitacaoBridge.buscar(numeroChamado);
             const pessoa = dados.nome ? { nome: dados.nome, matricula: dados.matricula, unidade: dados.unidade } : null;
-            const processoCampo = (dados.processo && dados.processo !== 'N/A') ? dados.processo : extrairNumeroProcesso();
+            // Se a consulta REST não achou processo nenhum (campo próprio e
+            // Descrição vazios, ou payload sem esses campos), ainda vale varrer o
+            // texto da tela antes de dar o processo como inexistente.
+            const daRest = Array.isArray(dados.processos) ? dados.processos : [];
+            const processos = daRest.length ? daRest : extrairProcessosDaTela();
+            const processoCampo = (dados.processo && dados.processo !== 'N/A') ? dados.processo : (processos[0] || null);
             return {
                 pessoa,
                 processoCampo,
-                processos: Array.isArray(dados.processos) ? dados.processos : [],
+                processos,
                 magistrado: !!dados.magistrado,
                 ehGlobal: !!dados.ehGlobal,
                 globalVinculadoId: dados.globalVinculadoId || '',
+                // Título/status desta solicitação: usados no tooltip do ícone de
+                // vínculo quando ELA é a global.
+                titulo: dados.titulo || '',
+                status: dados.status || '',
                 avisoMesmaData: dados.avisoMesmaData || { total: 0, itens: [] }
             };
         } catch (err) {
             log('Falha ao buscar dados da solicitação via REST:', err);
-            return { pessoa: null, processoCampo: extrairNumeroProcesso(), ...EXTRAS_VAZIOS };
+            const daTela = extrairProcessosDaTela();
+            return { pessoa: null, processoCampo: daTela[0] || null, processos: daTela, ...EXTRAS_VAZIOS };
         }
     }
 
-    function extrairNumeroProcesso() {
+    // Varredura de reserva na própria tela, usada só quando a consulta REST não
+    // respondeu (ou não trouxe processo nenhum). Reaproveita o detector da
+    // Consulta Rápida (Módulo 1, exposto em window.__tjspProcessosCnj), que
+    // cobre número formatado E número só em dígitos, em vez de enxergar apenas
+    // o formato com hífen/pontos do REGEX_PROCESSO local — esse fica como
+    // último recurso, caso o Módulo 1 ainda não tenha carregado.
+    function extrairProcessosDaTela() {
         const texto = document.body.innerText || '';
-        const match = texto.match(REGEX_PROCESSO);
-        return match ? match[0] : null;
+        const detector = window.__tjspProcessosCnj;
+        if (detector && typeof detector.extrairDeTexto === 'function') {
+            try { return detector.extrairDeTexto(texto); } catch (err) { log('Falha no detector de processos do Módulo 1:', err); }
+        }
+        return texto.match(new RegExp(REGEX_PROCESSO.source, 'g')) || [];
+    }
+
+    function extrairNumeroProcesso() {
+        const encontrados = extrairProcessosDaTela();
+        return encontrados.length ? encontrados[0] : null;
+    }
+
+    // Atributos do tooltip de vínculo (o balão com o título do chamado do outro
+    // lado). Quem escuta o hover é o Módulo 1, com um listener delegado no
+    // document — aqui basta marcar o ícone. Passando título/status já conhecidos,
+    // o balão abre preenchido, sem requisição.
+    function attrsTooltipVinculo(id, rotulo, titulo, status, dica) {
+        let attrs = ` data-tjsp-vinculo-id="${escapeHtml(id)}" data-tjsp-vinculo-rotulo="${escapeHtml(rotulo)}"`;
+        if (titulo) attrs += ` data-tjsp-vinculo-titulo="${escapeHtml(titulo)}"`;
+        if (status) attrs += ` data-tjsp-vinculo-status="${escapeHtml(status)}"`;
+        if (dica) attrs += ` data-tjsp-vinculo-dica="${escapeHtml(dica)}"`;
+        return attrs;
     }
 
     function renderizarPainelDados(dadosPessoa, extras) {
@@ -4120,7 +4509,7 @@
 <div class="smax-dados-item">
 <div class="smax-dados-item-texto">
 <span class="smax-dados-item-rotulo">Vínculo</span>
-<span class="smax-dados-item-valor"><span class="smax-dados-global smax-dados-global-e">🌐 Solicitação GLOBAL</span></span>
+<span class="smax-dados-item-valor"><span class="smax-dados-global smax-dados-global-e"${attrsTooltipVinculo(extrairNumeroChamadoAtual() || '', 'Esta solicitação é a global', extras.titulo || '', extras.status || '', '')}>🌐 Solicitação GLOBAL</span></span>
 </div>
 </div>`;
         } else if (extras.globalVinculadoId) {
@@ -4129,7 +4518,7 @@
 <div class="smax-dados-item">
 <div class="smax-dados-item-texto">
 <span class="smax-dados-item-rotulo">Vínculo</span>
-<span class="smax-dados-item-valor"><span class="smax-dados-global">🌐 Global</span> <a href="${urlG}" target="_blank" rel="noopener noreferrer">#${escapeHtml(extras.globalVinculadoId)}</a></span>
+<span class="smax-dados-item-valor"><span class="smax-dados-global"${attrsTooltipVinculo(extras.globalVinculadoId, 'Chamado global', '', '', '')}>🌐 Global</span> <a href="${urlG}" target="_blank" rel="noopener noreferrer"${attrsTooltipVinculo(extras.globalVinculadoId, 'Chamado global', '', '', 'Clique para abrir em nova guia')}>#${escapeHtml(extras.globalVinculadoId)}</a></span>
 </div>
 <button class="smax-dados-copiar" data-copia="${escapeHtml(extras.globalVinculadoId)}" title="Copiar">${ICONE_COPIAR}</button>
 </div>`;
@@ -4140,7 +4529,7 @@
         const aviso = extras.avisoMesmaData || { total: 0, itens: [] };
         if (aviso.total) {
             html += `<div class="smax-dados-aviso"><strong>⚠️ ${aviso.total} outra(s) solicitação(ões) deste solicitante registrada(s) nesta data, aguardando atendimento:</strong>` +
-                aviso.itens.map(it => `<a href="${location.origin}/saw/Request/${encodeURIComponent(it.id)}/general" target="_blank" rel="noopener noreferrer">#${escapeHtml(it.id)} — ${escapeHtml(it.rotulo)}</a>`).join('') +
+                aviso.itens.map(it => `<a href="${location.origin}/saw/Request/${encodeURIComponent(it.id)}/general" target="_blank" rel="noopener noreferrer"${attrsTooltipVinculo(it.id, 'Solicitação relacionada', it.rotulo || '', it.status || '', 'Clique para abrir em nova guia')}>#${escapeHtml(it.id)} — ${escapeHtml(it.rotulo)}</a>`).join('') +
                 `</div>`;
         }
 
